@@ -1,0 +1,24 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The release toolchain runs in its Alpine image, so tests use the same musl target as the published binaries
+      - name: Format, lint and test
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src rust:alpine sh -ec '
+            apk add --no-cache musl-dev >/dev/null
+            rustup component add rustfmt clippy >/dev/null
+            cargo fmt --check
+            cargo clippy --all-targets --locked -- -D warnings
+            cargo test --locked'

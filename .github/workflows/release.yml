@@ -1,0 +1,64 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-26.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check the crate version matches the tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: test "v$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)" = "$TAG"
+      # JavaScript actions cannot run inside Alpine on arm64 runners, so the build runs in a plain docker run on the native runner
+      - name: Build the static musl binary
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src rust:alpine sh -ec '
+            apk add --no-cache musl-dev >/dev/null
+            cargo test --locked
+            cargo build --release --locked'
+          cp target/release/varnish-tracer "varnish-tracer-$ARCH-linux-musl"
+          file "varnish-tracer-$ARCH-linux-musl"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: varnish-tracer-${{ matrix.arch }}
+          path: varnish-tracer-${{ matrix.arch }}-linux-musl
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cp vcl/tracer.vcl dist/
+          cd dist
+          chmod 0755 varnish-tracer-*
+          sha256sum varnish-tracer-* tracer.vcl > SHA256SUMS
+          cat SHA256SUMS
+          gh release create "$TAG" --verify-tag --title "varnish-tracer ${TAG#v}" --generate-notes varnish-tracer-* tracer.vcl SHA256SUMS

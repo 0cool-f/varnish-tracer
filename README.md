@@ -283,6 +283,19 @@ docker run -d --name varnish-tracer \
   <varnish image> varnish-tracer
 ```
 
+## Releases
+
+Every `v*` tag builds static musl binaries on native GitHub runners and publishes them with the release:
+
+| Asset | Content |
+|---|---|
+| `varnish-tracer-x86_64-linux-musl` | binary for amd64 |
+| `varnish-tracer-aarch64-linux-musl` | binary for arm64 |
+| `tracer.vcl` | the VCL include of the same version |
+| `SHA256SUMS` | checksums of the three files above |
+
+Images that embed the tracer should download the asset for their architecture and verify it against a checksum pinned in their own build files, not against the `SHA256SUMS` downloaded next to it.
+
 ## Build
 
 ```sh
@@ -290,10 +303,10 @@ cargo build --release
 cargo test
 ```
 
-Static binary for Alpine-based images:
+The release binaries are built inside `rust:alpine`, which produces a static musl binary for the host architecture:
 
 ```sh
-cargo build --release --target x86_64-unknown-linux-musl
+docker run --rm -v "$PWD:/src" -w /src rust:alpine sh -ec 'apk add --no-cache musl-dev; cargo build --release --locked'
 ```
 
 ## License
