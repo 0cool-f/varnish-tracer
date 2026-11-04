@@ -35,10 +35,18 @@ import std;
 import blob;
 import blobdigest;
 
-# Removes every trace header a client could send, so it can neither force sampling nor choose ids.
+# Dynatrace server-side tags carry their own parent, which would make the backend skip the Varnish span; x-dtpc stays, as browsers send it for RUM.
+sub tracer_drop_dynatrace {
+  unset req.http.x-dynatrace;
+  unset req.http.x-dynatrace-application;
+  unset req.http.x-dynatrace-requeststate;
+}
+
+# Removes every trace header a client could send, Dynatrace server-side tags included, so it can neither force sampling nor choose ids.
 sub tracer_scrub {
   unset req.http.traceparent;
   unset req.http.tracestate;
+  call tracer_drop_dynatrace;
   unset req.http.X-Tracer-Id;
   unset req.http.X-Tracer-Parent;
   unset req.http.X-Tracer-Span;
@@ -107,7 +115,7 @@ sub tracer_recv_trusted {
 }
 
 # Starts the Varnish span, once per request: keeps the incoming trace id or creates one, and replaces the parent id with a fresh span id.
-# Does nothing while the key is invalid.
+# tracestate and the Dynatrace tags are dropped, so traceparent alone makes the backend a child of Varnish. Does nothing while the key is invalid.
 sub tracer_start {
   if (req.http.X-Tracer-Span) {
     return;
@@ -123,9 +131,10 @@ sub tracer_start {
     std.log(regsub(std.fileread("/etc/varnish/tracer.key"), "\s+$", "") + "_parent:" + req.http.X-Tracer-Parent);
     set req.http.traceparent = regsub(req.http.traceparent, "^(00-[0-9a-f]{32}-).*$", "\1") + req.http.X-Tracer-Span + "-01";
   } else {
-    unset req.http.tracestate;
     set req.http.traceparent = regsub(req.http.X-Tracer-Id, "^(.{32})(.{16}).*$", "00-\1-\2-01");
   }
+  unset req.http.tracestate;
+  call tracer_drop_dynatrace;
   unset req.http.X-Tracer-Id;
   std.log(regsub(std.fileread("/etc/varnish/tracer.key"), "\s+$", "") + "_tp:" + req.http.traceparent);
 }

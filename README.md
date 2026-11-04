@@ -85,9 +85,9 @@ Every record `tracer.vcl` writes with `std.log` is prefixed with a shared secret
 
 | Subroutine | What it does |
 |---|---|
-| `tracer_recv` | Entry point for requests from untrusted clients: removes `traceparent`, `tracestate` and `X-Tracer-*` request headers, so clients can neither force sampling nor choose trace ids. |
-| `tracer_recv_trusted` | Entry point for requests from a trusted upstream: removes `X-Tracer-*`, collapses duplicate `traceparent` headers, drops a malformed `traceparent` together with `tracestate`, and calls `tracer_start` when the upstream sampled the request (flags with the sampled bit). An unsampled upstream `traceparent` is forwarded unchanged. |
-| `tracer_start` | Does nothing when the key is invalid. Otherwise keeps the incoming trace id or creates one, generates the Varnish span id from two random values, the server identity, the transaction id and the time, rewrites `traceparent` for the backend and logs `<key>_parent:<upstream span id>` (when there is one) and `<key>_tp:<traceparent>`. It stores the upstream span id in `X-Tracer-Parent` and its own in `X-Tracer-Span`, and does nothing when `X-Tracer-Span` is already set. |
+| `tracer_recv` | Entry point for requests from untrusted clients: removes `traceparent`, `tracestate`, the Dynatrace server-side tags (`x-dynatrace`, `x-dynatrace-application`, `x-dynatrace-requeststate`) and `X-Tracer-*` request headers, so clients can neither force sampling nor choose trace ids. `x-dtpc`, sent by browsers for Dynatrace RUM, is kept. |
+| `tracer_recv_trusted` | Entry point for requests from a trusted upstream: removes `X-Tracer-*`, collapses duplicate `traceparent` headers, drops a malformed `traceparent` together with `tracestate`, and calls `tracer_start` when the upstream sampled the request (flags with the sampled bit). An unsampled upstream `traceparent` is forwarded unchanged, together with `tracestate` and the Dynatrace tags, so the backend still continues the upstream trace. |
+| `tracer_start` | Does nothing when the key is invalid. Otherwise keeps the incoming trace id or creates one, generates the Varnish span id from two random values, the server identity, the transaction id and the time, rewrites `traceparent` for the backend, removes `tracestate` and the Dynatrace server-side tags (which carry the upstream parent and would make the backend skip the Varnish span), and logs `<key>_parent:<upstream span id>` (when there is one) and `<key>_tp:<traceparent>`. It stores the upstream span id in `X-Tracer-Parent` and its own in `X-Tracer-Span`, and does nothing when `X-Tracer-Span` is already set. |
 | `tracer_deliver` | To be called from the including VCL's `vcl_deliver`. For a traced request it logs `<key>_hits:<obj.hits>` and `<key>_ttl:<obj.ttl>`, and `<key>_reason:<X-Tracer-Reason>` when the including VCL has set that request header. |
 | `vcl_backend_fetch` | For a traced fetch (`X-Tracer-Span` set, valid key, valid `traceparent`) generates a new span id for the backend request with the same hashing as `tracer_start` and the backend transaction id, logs `<key>_be_tp:00-<trace id>-<new id>-01` and `<key>_be_parent:<Varnish span id>`, and sends that `traceparent` to the backend. Then removes `X-Tracer-Parent`, `X-Tracer-Span`, `X-Tracer-Id` and `X-Tracer-Reason` from the backend request. |
 | `vcl_pipe` | Removes the same four internal headers; piped requests get no backend span and the backend sees the Varnish span id in `traceparent`. |
@@ -106,13 +106,13 @@ The including VCL picks the entry point with its own ACL and decides the samplin
 import std;
 
 acl tracer_upstream {
-    "10.0.0.0"/8;
+    "127.0.0.1"/32;   # a OneAgent-instrumented proxy on the same host
 }
 
 include "tracer.vcl";
 
 sub vcl_recv {
-    if (client.ip ~ tracer_upstream) {
+    if (remote.ip ~ tracer_upstream) {
         call tracer_recv_trusted;
     } else {
         call tracer_recv;
@@ -261,7 +261,7 @@ The OneAgent local OTLP ingest has to be enabled on the host; check the endpoint
 
 - Log records are only trusted with the shared key as prefix: a `std.log("tracer_tp:" + …)` or a record with any other key is ignored by `varnishncsa`, so client data logged by the including VCL cannot forge a span. Never `std.log` client-controlled data with the key as prefix, and never log the key itself.
 - The key is visible to everyone who can read the shared log (it is the prefix of every record) and the key file; protect the Varnish working directory and the file like a credential, and rotate it with a VCL reload plus a tracer restart.
-- Use `tracer_recv_trusted` only for networks you control; a client that reaches it can choose trace ids and force sampling.
+- Use `tracer_recv_trusted` only for upstreams that set their own trace context, such as a OneAgent-instrumented proxy on the same host, and match them on `remote.ip`. A proxy that relays client headers unchanged (a plain load balancer) must not be trusted: through it any client could choose trace ids and force sampling.
 - The path and the user agent are client-controlled and exported as span attributes (and printed by `--dry-run`); the query is exported only with `--include-query`.
 - `tracer.vcl` removes `traceparent`, `tracestate`, `traceresponse` and the Dynatrace `Server-Timing` entries from cacheable backend responses, so a backend that echoes them cannot make Varnish replay the ids of the first requester to other users. Uncacheable responses (passes) are not touched; the including VCL decides what clients see there.
 - `X-Tracer-Reason` and the other `X-Tracer-*` request headers sent by clients are removed by `tracer_recv` and `tracer_recv_trusted`, and none of them reaches a backend.
