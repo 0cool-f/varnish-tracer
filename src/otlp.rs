@@ -138,6 +138,10 @@ impl KeyValue {
         Self::new(key, any_value::Value::Int(value))
     }
 
+    pub fn bool(key: &str, value: bool) -> Self {
+        Self::new(key, any_value::Value::Bool(value))
+    }
+
     pub fn double(key: &str, value: f64) -> Self {
         Self::new(key, any_value::Value::Double(value))
     }

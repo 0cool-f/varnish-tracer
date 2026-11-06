@@ -14,6 +14,7 @@ struct Raw {
     hits: String,
     ttl: String,
     reason: String,
+    late: String,
     bend: String,
     bresp: String,
     berr: String,
@@ -68,6 +69,8 @@ pub struct Record {
     pub hits: Option<i64>,
     pub ttl: Option<f64>,
     pub reason: Option<String>,
+    /// Sampled after the response, by `tracer_start_late`.
+    pub late: bool,
 }
 
 /// Parses one line; `None` means the line is malformed.
@@ -130,6 +133,7 @@ pub fn parse(line: &[u8]) -> Option<Record> {
         hits: present(&raw.hits).and_then(|v| v.parse().ok()),
         ttl: present(&raw.ttl).and_then(finite),
         reason: owned(&raw.reason),
+        late: side == Side::Client && raw.late == "1",
     })
 }
 
@@ -405,6 +409,17 @@ mod tests {
         assert_eq!(r.reason.as_deref(), Some("static asset"));
         let r = parse(SAMPLE.as_bytes()).unwrap();
         assert_eq!((r.hits, r.ttl, r.reason), (None, None, None));
+    }
+
+    #[test]
+    fn late_sampling_is_a_client_flag() {
+        let late = |line: &str| {
+            let line = format!("{}\"late\":\"1\",{}", &line[..1], &line[1..]);
+            parse(line.as_bytes()).unwrap().late
+        };
+        assert!(late(SAMPLE));
+        assert!(!late(BACKEND));
+        assert!(!parse(SAMPLE.as_bytes()).unwrap().late);
     }
 
     #[test]

@@ -55,7 +55,7 @@ fn backend_attributes(record: &Record) -> Vec<KeyValue> {
 }
 
 fn server_attributes(record: &Record, include_query: bool) -> Vec<KeyValue> {
-    let mut attrs = Vec::with_capacity(15);
+    let mut attrs = Vec::with_capacity(16);
     let mut string = |key: &str, value: &Option<String>| {
         if let Some(v) = value {
             attrs.push(KeyValue::string(key, v));
@@ -107,6 +107,9 @@ fn server_attributes(record: &Record, include_query: bool) -> Vec<KeyValue> {
     }
     if let Some(reason) = &record.reason {
         attrs.push(KeyValue::string("varnish.cache_reason", reason));
+    }
+    if record.late {
+        attrs.push(KeyValue::bool("varnish.late_sampling", true));
     }
     attrs
 }
@@ -246,6 +249,19 @@ mod tests {
         for key in ["varnish.hits", "varnish.ttl", "varnish.cache_reason"] {
             assert!(attr(&span, key).is_none(), "{key}");
         }
+    }
+
+    #[test]
+    fn late_sampling_is_flagged_only_when_set() {
+        let late = Record {
+            late: true,
+            ..record()
+        };
+        assert_eq!(
+            attr(&to_span(&late, false), "varnish.late_sampling"),
+            Some(&Value::Bool(true))
+        );
+        assert!(attr(&to_span(&record(), false), "varnish.late_sampling").is_none());
     }
 
     #[test]

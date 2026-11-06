@@ -14,7 +14,7 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 const FORMAT_TEMPLATE: &str = concat!(
     r#"{"side":"%{Varnish:side}x","tp":"%{VCL_Log:@_tp}x","parent":"%{VCL_Log:@_parent}x","#,
     r#""betp":"%{VCL_Log:@_be_tp}x","beparent":"%{VCL_Log:@_be_parent}x","#,
-    r#""hits":"%{VCL_Log:@_hits}x","ttl":"%{VCL_Log:@_ttl}x","reason":"%{VCL_Log:@_reason}x","#,
+    r#""hits":"%{VCL_Log:@_hits}x","ttl":"%{VCL_Log:@_ttl}x","reason":"%{VCL_Log:@_reason}x","late":"%{VCL_Log:@_late}x","#,
     r#""start":"%{VSL:Timestamp:Start[1]}x","resp":"%{VSL:Timestamp:Resp[1]}x","#,
     r#""bend":"%{VSL:Timestamp:BerespBody[1]}x","bresp":"%{VSL:Timestamp:Beresp[1]}x","#,
     r#""berr":"%{VSL:Timestamp:Error[1]}x","backend":"%{VSL:BackendOpen[2]}x","fetcherr":"%{VSL:FetchError}x","#,
@@ -172,13 +172,14 @@ mod tests {
             "hits",
             "ttl",
             "reason",
+            "late",
         ] {
             assert!(
                 format.contains(&format!("%{{VCL_Log:{k}_{field}}}x")),
                 "{field}"
             );
         }
-        assert_eq!(format.matches("VCL_Log:").count(), 7);
+        assert_eq!(format.matches("VCL_Log:").count(), 8);
         assert!(!format.contains('@') && !format.contains("tracer_"));
     }
 

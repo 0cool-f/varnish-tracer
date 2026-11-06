@@ -88,8 +88,9 @@ Every record `tracer.vcl` writes with `std.log` is prefixed with a shared secret
 | `tracer_recv` | Entry point for requests from untrusted clients: removes `traceparent`, `tracestate`, the Dynatrace server-side tags (`x-dynatrace`, `x-dynatrace-application`, `x-dynatrace-requeststate`) and `X-Tracer-*` request headers, so clients can neither force sampling nor choose trace ids. `x-dtpc`, sent by browsers for Dynatrace RUM, is kept. |
 | `tracer_recv_trusted` | Entry point for requests from a trusted upstream: removes `X-Tracer-*`, collapses duplicate `traceparent` headers, drops a malformed `traceparent` together with `tracestate`, and calls `tracer_start` when the upstream sampled the request (flags with the sampled bit). An unsampled upstream `traceparent` is forwarded unchanged, together with `tracestate` and the Dynatrace tags, so the backend still continues the upstream trace. |
 | `tracer_start` | Does nothing when the key is invalid. Otherwise keeps the incoming trace id or creates one, generates the Varnish span id from two random values, the server identity, the transaction id and the time, rewrites `traceparent` for the backend, removes `tracestate` and the Dynatrace server-side tags (which carry the upstream parent and would make the backend skip the Varnish span), and logs `<key>_parent:<upstream span id>` (when there is one) and `<key>_tp:<traceparent>`. It stores the upstream span id in `X-Tracer-Parent` and its own in `X-Tracer-Span`, and does nothing when `X-Tracer-Span` is already set. |
-| `tracer_deliver` | To be called from the including VCL's `vcl_deliver`. For a traced request it logs `<key>_hits:<obj.hits>` and `<key>_ttl:<obj.ttl>`, and `<key>_reason:<X-Tracer-Reason>` when the including VCL has set that request header. |
-| `vcl_backend_fetch` | For a traced fetch (`X-Tracer-Span` set, valid key, valid `traceparent`) generates a new span id for the backend request with the same hashing as `tracer_start` and the backend transaction id, logs `<key>_be_tp:00-<trace id>-<new id>-01` and `<key>_be_parent:<Varnish span id>`, and sends that `traceparent` to the backend. Then removes `X-Tracer-Parent`, `X-Tracer-Span`, `X-Tracer-Id` and `X-Tracer-Reason` from the backend request. |
+| `tracer_start_late` | To be called from the including VCL's `vcl_deliver` or `vcl_synth`, on its own condition such as a 5xx status, for requests that were not sampled in `vcl_recv`. Calls `tracer_start` and logs `<key>_late:1` when it started a span; the backend fetch is already over, so such a request has no `CLIENT` span. In `vcl_deliver`, setting the `X-Tracer-Late` request header before `tracer_deliver` does the same. |
+| `tracer_deliver` | To be called from the including VCL's `vcl_deliver`. Calls `tracer_start_late` first when the including VCL has set `X-Tracer-Late`. For a traced request it logs `<key>_hits:<obj.hits>` and `<key>_ttl:<obj.ttl>`, and `<key>_reason:<X-Tracer-Reason>` when the including VCL has set that request header. |
+| `vcl_backend_fetch` | For a traced fetch (`X-Tracer-Span` set, valid key, valid `traceparent`) generates a new span id for the backend request with the same hashing as `tracer_start` and the backend transaction id, logs `<key>_be_tp:00-<trace id>-<new id>-01` and `<key>_be_parent:<Varnish span id>`, and sends that `traceparent` to the backend. Then removes `X-Tracer-Parent`, `X-Tracer-Span`, `X-Tracer-Id`, `X-Tracer-Reason` and `X-Tracer-Late` from the backend request. |
 | `vcl_pipe` | Removes the same four internal headers; piped requests get no backend span and the backend sees the Varnish span id in `traceparent`. |
 | `vcl_backend_response` | When `bereq.uncacheable` is false, removes the `traceparent`, `tracestate` and `traceresponse` response headers and the `dt*` entries of `Server-Timing` (joining repeated `Server-Timing` headers first, and dropping the header when nothing else is left), so the ids of one request are never replayed from the cache to other users. Uncacheable fetches, such as passes, keep these headers. |
 
@@ -128,12 +129,16 @@ sub vcl_deliver {
     if (resp.http.X-Cacheable) {
         set req.http.X-Tracer-Reason = resp.http.X-Cacheable;
     }
+    # Optional: also trace the errors that were not sampled in vcl_recv
+    if (resp.status >= 500) {
+        set req.http.X-Tracer-Late = "1";
+    }
     call tracer_deliver;
     # ...
 }
 ```
 
-Requests that should never become spans, such as health checks, must return before these calls. `X-Tracer-Reason` is removed from client requests like the other `X-Tracer-*` headers and never reaches a backend; set it before `call tracer_deliver`.
+Requests that should never become spans, such as health checks, must return before these calls. `X-Tracer-Reason` and `X-Tracer-Late` are removed from client requests like the other `X-Tracer-*` headers and never reach a backend; set them before `call tracer_deliver`. Late sampling is not rate limited: a condition that can match most requests, such as every 5xx during an outage, needs a limit of its own, for example with `vsthrottle`.
 
 ### `varnish-tracer`
 
@@ -211,6 +216,7 @@ Every string value, the span name included, is cut to 1024 bytes on a UTF-8 boun
 | `varnish.hits` | integer, `obj.hits` logged by `tracer_deliver` |
 | `varnish.ttl` | double, `obj.ttl` in seconds logged by `tracer_deliver`, negative while the object is in grace |
 | `varnish.cache_reason` | string, `X-Tracer-Reason` logged by `tracer_deliver` |
+| `varnish.late_sampling` | boolean `true` for a span started by `tracer_start_late`, absent otherwise |
 
 `varnish.hits`, `varnish.ttl` and `varnish.cache_reason` are only present when the including VCL calls `tracer_deliver` (and sets `X-Tracer-Reason`).
 

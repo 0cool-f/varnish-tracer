@@ -51,6 +51,7 @@ sub tracer_scrub {
   unset req.http.X-Tracer-Parent;
   unset req.http.X-Tracer-Span;
   unset req.http.X-Tracer-Reason;
+  unset req.http.X-Tracer-Late;
 }
 
 # Makes an ESI fragment a child of the Varnish span of the top request.
@@ -100,6 +101,7 @@ sub tracer_recv_trusted {
   unset req.http.X-Tracer-Parent;
   unset req.http.X-Tracer-Span;
   unset req.http.X-Tracer-Reason;
+  unset req.http.X-Tracer-Late;
   # Assigning a header to itself collapses duplicates into one
   set req.http.traceparent = req.http.traceparent;
   if (req.http.traceparent &&
@@ -139,9 +141,24 @@ sub tracer_start {
   std.log(regsub(std.fileread("/etc/varnish/tracer.key"), "\s+$", "") + "_tp:" + req.http.traceparent);
 }
 
-# For vcl_deliver of the including VCL: logs the cache attributes of a traced request.
-# X-Tracer-Reason, when the including VCL has set it, is logged as the cache reason.
+# For vcl_deliver or vcl_synth of the including VCL, on its own decision such as an error status: starts the span of a request
+# not sampled in vcl_recv and logs it as late; the fetch is already over, so the request gets no backend span.
+# tracer_deliver calls it when X-Tracer-Late is set, so an including VCL that never calls it still compiles.
+sub tracer_start_late {
+  if (!req.http.X-Tracer-Span) {
+    call tracer_start;
+    if (req.http.X-Tracer-Span) {
+      std.log(regsub(std.fileread("/etc/varnish/tracer.key"), "\s+$", "") + "_late:1");
+    }
+  }
+}
+
+# For vcl_deliver of the including VCL: logs the cache attributes of a traced request, after starting a late span when the
+# including VCL has set X-Tracer-Late. X-Tracer-Reason, when the including VCL has set it, is logged as the cache reason.
 sub tracer_deliver {
+  if (req.http.X-Tracer-Late) {
+    call tracer_start_late;
+  }
   if (req.http.X-Tracer-Span && regsub(std.fileread("/etc/varnish/tracer.key"), "\s+$", "") ~ "^[0-9a-f]{32}$") {
     std.log(regsub(std.fileread("/etc/varnish/tracer.key"), "\s+$", "") + "_hits:" + obj.hits);
     std.log(regsub(std.fileread("/etc/varnish/tracer.key"), "\s+$", "") + "_ttl:" + obj.ttl);
@@ -167,6 +184,7 @@ sub vcl_backend_fetch {
   unset bereq.http.X-Tracer-Span;
   unset bereq.http.X-Tracer-Id;
   unset bereq.http.X-Tracer-Reason;
+  unset bereq.http.X-Tracer-Late;
 }
 
 sub vcl_pipe {
@@ -174,6 +192,7 @@ sub vcl_pipe {
   unset bereq.http.X-Tracer-Span;
   unset bereq.http.X-Tracer-Id;
   unset bereq.http.X-Tracer-Reason;
+  unset bereq.http.X-Tracer-Late;
 }
 
 # One request's trace ids must never be replayed from the cache to other users.
