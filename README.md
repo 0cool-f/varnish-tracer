@@ -144,7 +144,7 @@ Requests that should never become spans, such as health checks, must return befo
 
 A single static binary that:
 
-1. validates its configuration and exits with code 2 and a message when the endpoint, a header, the compression, the CA file, the key file (unless `--stdin`) or the metrics address is invalid or unusable;
+1. validates its configuration and exits with code 2 and a message when the endpoint, a header, the compression, the CA file, the key file (unless `--stdin`) or the metrics address is invalid or unusable, or `--red-metrics` is set without `--metrics-listen` or with `--stdin`;
 2. starts `varnishncsa -c -b` as a child process, attached to the Varnish working directory, selecting the transactions with a `VCL_Log:<key>_tp` or `VCL_Log:<key>_be_tp` record and printing a fixed JSON format built at runtime from the key; its stderr is copied to ours with a `varnishncsa: ` prefix, and lines containing `overrun` are counted as `vsl_overruns`, since a VSL overrun silently loses records;
 3. turns each line into an OTLP span, a `SERVER` span for a client transaction and a `CLIENT` span for a backend transaction; invalid UTF-8 is replaced with U+FFFD, lines over 64 KiB are skipped and counted as `malformed`, records whose start timestamp is 0 are rejected, and so are backend records without a valid parent span id;
 4. buffers spans in a bounded queue and exports them in batches over OTLP/HTTP protobuf, gzip-compressed on request;
@@ -172,6 +172,16 @@ Dry run: with `--dry-run` nothing is exported and no HTTP request is made; each 
 `trace_id`, `span_id` and `parent_span_id` are hex (the parent is an empty string for a root span), the times are unix nanoseconds as JSON numbers, `kind` is `SERVER` or `CLIENT`, `attributes` maps the attribute names to their values and `status` is `null` or `{"code":"ERROR"}`.
 
 Metrics: with `--metrics-listen ADDR:PORT` a small HTTP server runs on its own thread and answers `GET /metrics` with the Prometheus text format; every other method and path gets a 404. It reads the request head within 2 s and at most 8 KiB, handles one connection at a time, and only reads the counters, so it can never slow the pipeline down. There is no authentication or TLS: bind it to a loopback or a private address.
+
+Request metrics: with `--red-metrics` a second `varnishncsa` prints one short line (status, handling, time to first byte) for every client transaction, sampled or not, ESI subrequests included, and the endpoint adds:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `varnish_tracer_requests_total` | counter | `handling` (`hit`, `miss`, `pass`, `pipe`, `synth`, `other`), `code` (`1xx` to `5xx`, `other`) |
+| `varnish_tracer_request_ttfb_seconds` | histogram, buckets from 1 ms to 10 s | `handling` |
+| `varnish_tracer_requests_malformed_total` | counter | none |
+
+These are what `varnishstat` does not provide: status classes and latency. If that `varnishncsa` exits, the main one is stopped too and the process exits with a failure, as it does when the main one exits. Its stderr goes to the same output, and its overruns to the same `vsl_overruns` counter.
 
 | Metric | Type | Meaning |
 |---|---|---|
@@ -256,6 +266,7 @@ Every option can be set as a flag or through its environment variable, except `-
 | `--include-query` | `VARNISH_TRACER_INCLUDE_QUERY` | off | add `url.query`; query strings may carry personal data |
 | `--dry-run` | `VARNISH_TRACER_DRY_RUN` | off | print each span as one JSON line on stdout instead of exporting it; no HTTP request is made |
 | `--metrics-listen` | `VARNISH_TRACER_METRICS_LISTEN` | off | `ADDR:PORT` of the Prometheus endpoint, e.g. `127.0.0.1:9132`; a bind failure is a startup error |
+| `--red-metrics` | `VARNISH_TRACER_RED_METRICS` | off | count every client request by handling and status class, with a time to first byte histogram; needs `--metrics-listen` |
 | `--batch-size` | `VARNISH_TRACER_BATCH_SIZE` | `512` | spans per export request, 1 to 10000 |
 | `--batch-timeout-ms` | `VARNISH_TRACER_BATCH_TIMEOUT_MS` | `5000` | longest wait before exporting a partial batch, 1 to 60000 |
 | `--queue-size` | `VARNISH_TRACER_QUEUE_SIZE` | `8192` | spans buffered before new ones are dropped, 1 to 1000000 |

@@ -7,6 +7,7 @@ mod metrics;
 mod ncsa;
 mod otlp;
 mod record;
+mod red;
 mod span;
 mod text;
 
@@ -19,7 +20,7 @@ use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
 use std::sync::mpsc::{RecvTimeoutError, SyncSender, TrySendError, channel, sync_channel};
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,7 @@ struct Settings {
     exporter: exporter::Config,
     key: Option<key::Key>,
     metrics: Option<TcpListener>,
+    red: Option<Arc<red::Red>>,
 }
 
 fn settings(cli: &config::Cli) -> Result<Settings, String> {
@@ -46,6 +48,9 @@ fn settings(cli: &config::Cli) -> Result<Settings, String> {
             TcpListener::bind(addr).map_err(|err| format!("metrics listener {addr}: {err}"))
         })
         .transpose()?;
+    if cli.red_metrics && (cli.stdin || metrics.is_none()) {
+        return Err("--red-metrics needs --metrics-listen and cannot be used with --stdin".into());
+    }
     Ok(Settings {
         exporter: exporter::Config {
             endpoint,
@@ -61,6 +66,7 @@ fn settings(cli: &config::Cli) -> Result<Settings, String> {
         },
         key,
         metrics,
+        red: cli.red_metrics.then(Arc::default),
     })
 }
 
@@ -76,9 +82,10 @@ fn main() -> ExitCode {
     let counters = Arc::new(Counters::default());
     let shutdown = Arc::new(Shutdown::new());
     let slot = child::Slot::default();
+    let red_slot = child::Slot::default();
 
     if let Some(listener) = settings.metrics {
-        metrics::spawn(listener, counters.clone());
+        metrics::spawn(listener, counters.clone(), settings.red.clone());
     }
     let (tx, rx) = sync_channel(cli.queue_size as usize);
     // The exporter thread owns `exporter_done`; the receiver disconnects when the thread ends.
@@ -94,7 +101,7 @@ fn main() -> ExitCode {
 
     let mut child_status = None;
     if let Some(key) = settings.key {
-        install_signal_handler(shutdown.clone(), slot.clone());
+        install_signal_handler(shutdown.clone(), vec![slot.clone(), red_slot.clone()]);
         let mut spawned = match ncsa::spawn(&cli.varnishncsa, &cli.instance, &key) {
             Ok(c) => c,
             Err(err) => {
@@ -106,6 +113,28 @@ fn main() -> ExitCode {
         let _ = slot.set(child.clone());
         if shutdown.get().is_some() {
             child::stop(&slot);
+        }
+        let stopping = Arc::new(AtomicBool::new(false));
+        let red_thread = match settings.red {
+            None => None,
+            Some(red) => match red::spawn(&cli.varnishncsa, &cli.instance) {
+                Ok(spawned) => Some(start_red(
+                    spawned,
+                    red,
+                    &red_slot,
+                    stopping.clone(),
+                    slot.clone(),
+                    counters.clone(),
+                )),
+                Err(err) => {
+                    eprintln!("varnish-tracer: cannot start {}: {err}", cli.varnishncsa);
+                    child::stop(&slot);
+                    return ExitCode::from(2);
+                }
+            },
+        };
+        if shutdown.get().is_some() {
+            child::stop(&red_slot);
         }
         let stderr = spawned.stderr.take().expect("stderr is piped");
         let stderr_counters = counters.clone();
@@ -125,6 +154,11 @@ fn main() -> ExitCode {
         });
         child.mark_reaped();
         let _ = stderr_thread.join();
+        stopping.store(true, Relaxed);
+        child::stop(&red_slot);
+        if let Some(thread) = red_thread {
+            let _ = thread.join();
+        }
     } else {
         pump(
             BufReader::new(std::io::stdin().lock()),
@@ -179,14 +213,48 @@ fn wait_for_exporter(
     }
 }
 
-fn install_signal_handler(shutdown: Arc<Shutdown>, slot: child::Slot) {
+fn install_signal_handler(shutdown: Arc<Shutdown>, slots: Vec<child::Slot>) {
     let mut signals = Signals::new([SIGTERM, SIGINT]).expect("signal handler");
     std::thread::spawn(move || {
         for _ in signals.forever() {
             let _ = shutdown.set(Instant::now());
-            child::stop(&slot);
+            slots.iter().for_each(child::stop);
         }
     });
+}
+
+/// Feeds the request metrics from the second varnishncsa; when it exits on its own, the main one is stopped too,
+/// so the process ends with a failure instead of serving frozen metrics.
+fn start_red(
+    mut spawned: std::process::Child,
+    red: Arc<red::Red>,
+    red_slot: &child::Slot,
+    stopping: Arc<AtomicBool>,
+    main_slot: child::Slot,
+    counters: Arc<Counters>,
+) -> std::thread::JoinHandle<()> {
+    let red_child = Arc::new(child::Child::new(spawned.id()));
+    let _ = red_slot.set(red_child.clone());
+    let stderr = spawned.stderr.take().expect("stderr is piped");
+    let stdout = spawned.stdout.take().expect("stdout is piped");
+    std::thread::spawn(move || {
+        let stderr_thread = std::thread::spawn(move || {
+            ncsa::forward_stderr(BufReader::new(stderr), &counters);
+        });
+        red::pump(BufReader::new(stdout), &red);
+        let status = spawned.wait();
+        red_child.mark_reaped();
+        let _ = stderr_thread.join();
+        if !stopping.load(Relaxed) {
+            match status {
+                Ok(status) => eprintln!("varnish-tracer: request varnishncsa exited: {status}"),
+                Err(err) => {
+                    eprintln!("varnish-tracer: waiting for the request varnishncsa failed: {err}")
+                }
+            }
+            child::stop(&main_slot);
+        }
+    })
 }
 
 /// Reads JSON lines until EOF, queueing spans without ever blocking.

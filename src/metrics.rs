@@ -1,6 +1,7 @@
 //! Prometheus text endpoint on its own thread; it only reads the counters and never touches the pipeline.
 
 use crate::exporter::Counters;
+use crate::red::Red;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
@@ -13,7 +14,7 @@ const MAX_REQUEST_BYTES: usize = 8 * 1024;
 const REQUEST_DEADLINE: Duration = Duration::from_secs(2);
 
 /// The metrics in the Prometheus text exposition format.
-pub fn render(c: &Counters) -> String {
+pub fn render(c: &Counters, red: Option<&Red>) -> String {
     let mut out = String::new();
     let mut metric = |name: &str, kind: &str, help: &str, samples: &[(&str, u64)]| {
         out.push_str(&format!("# HELP {name} {help}\n# TYPE {name} {kind}\n"));
@@ -60,6 +61,9 @@ pub fn render(c: &Counters) -> String {
         "Always 1 while the process runs.",
         &[("", 1)],
     );
+    if let Some(red) = red {
+        red.render(&mut out);
+    }
     out
 }
 
@@ -99,7 +103,7 @@ fn read_head(stream: &mut TcpStream) -> Option<Vec<u8>> {
     Some(head)
 }
 
-fn handle(mut stream: TcpStream, counters: &Counters) {
+fn handle(mut stream: TcpStream, counters: &Counters, red: Option<&Red>) {
     let _ = stream.set_write_timeout(Some(REQUEST_DEADLINE));
     let Some(head) = read_head(&mut stream) else {
         let _ = stream.write_all(&response("404 Not Found", "text/plain", "not found\n"));
@@ -109,7 +113,7 @@ fn handle(mut stream: TcpStream, counters: &Counters) {
         Some("/metrics") => response(
             "200 OK",
             "text/plain; version=0.0.4; charset=utf-8",
-            &render(counters),
+            &render(counters, red),
         ),
         _ => response("404 Not Found", "text/plain", "not found\n"),
     };
@@ -117,10 +121,10 @@ fn handle(mut stream: TcpStream, counters: &Counters) {
 }
 
 /// Serves requests one at a time on a detached thread.
-pub fn spawn(listener: TcpListener, counters: Arc<Counters>) {
+pub fn spawn(listener: TcpListener, counters: Arc<Counters>, red: Option<Arc<Red>>) {
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            handle(stream, &counters);
+            handle(stream, &counters, red.as_deref());
         }
     });
 }
@@ -138,7 +142,7 @@ mod tests {
         counters.malformed.store(4, Relaxed);
         counters.vsl_overruns.store(1, Relaxed);
         counters.queued.store(7, Relaxed);
-        let text = render(&counters);
+        let text = render(&counters, None);
         for expected in [
             "# TYPE varnish_tracer_spans_exported_total counter\nvarnish_tracer_spans_exported_total 5\n",
             "varnish_tracer_spans_dropped_total{reason=\"queue\"} 2\n",
@@ -154,6 +158,10 @@ mod tests {
         for line in text.lines().filter(|l| !l.starts_with('#')) {
             assert_eq!(line.split(' ').count(), 2, "{line}");
         }
+        assert!(!text.contains("varnish_tracer_requests_total"));
+        let with_red = render(&counters, Some(&Red::default()));
+        assert!(with_red.starts_with(&text));
+        assert!(with_red.contains("# TYPE varnish_tracer_request_ttfb_seconds histogram\n"));
     }
 
     #[test]

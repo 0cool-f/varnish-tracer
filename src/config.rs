@@ -97,6 +97,10 @@ pub struct Cli {
     #[arg(long, env = "VARNISH_TRACER_METRICS_LISTEN")]
     pub metrics_listen: Option<SocketAddr>,
 
+    /// Also count every client request by handling and status class, with a time to first byte histogram, through a second varnishncsa; needs --metrics-listen
+    #[arg(long, env = "VARNISH_TRACER_RED_METRICS")]
+    pub red_metrics: bool,
+
     /// Request compression, none or gzip; falls back to OTEL_EXPORTER_OTLP_COMPRESSION, then none
     #[arg(long, value_enum, env = "OTEL_EXPORTER_OTLP_TRACES_COMPRESSION")]
     pub compression: Option<Compression>,
