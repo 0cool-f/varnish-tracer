@@ -1,0 +1,1 @@
+ÿ{"tp":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01","parent":"00f067aa0ba902b7","start":"1793455717.323367","resp":"1793455717.323545","dur":"177","ttfb":"0.000076","method":"GET","host":"ncsa-varnish:8080","path":"/a%20b/c","query":"?x=1&y=2","proto":"HTTP/1.1","status":"404","bytes":"230","handling":"synth","vxid":"2","ua":"Wget"}

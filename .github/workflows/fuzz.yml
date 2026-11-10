@@ -1,0 +1,33 @@
+name: fuzz
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse, parse_structured, read_line]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # cargo-fuzz needs a nightly toolchain, so the run happens in the Debian rust image
+      - name: Fuzz ${{ matrix.target }}
+        run: |
+          docker run --rm -v "$PWD:/src" -w /src/fuzz -e TARGET="${{ matrix.target }}" rust:latest sh -ec '
+            rustup toolchain install nightly --profile minimal >/dev/null
+            cargo install cargo-fuzz --locked >/dev/null
+            cargo +nightly fuzz run "$TARGET" -- -max_total_time=300 -max_len=200000 -rss_limit_mb=2048'
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          if-no-files-found: ignore
