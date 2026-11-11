@@ -1,0 +1,28 @@
+# cargo deny check: RustSec advisories, licenses compatible with GPL-3.0-or-later, and crates.io as the only source.
+
+[graph]
+targets = ["x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"]
+
+[advisories]
+yanked = "deny"
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

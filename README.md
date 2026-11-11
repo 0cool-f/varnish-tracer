@@ -313,6 +313,10 @@ Every `v*` tag builds static musl binaries on native GitHub runners and publishe
 
 Images that embed the tracer should download the asset for their architecture and verify it against a checksum pinned in their own build files, not against the `SHA256SUMS` downloaded next to it.
 
+## Supported Rust versions
+
+The minimum supported Rust version is the `rust-version` in `Cargo.toml`; CI checks the crate and its locked dependencies with it. `cargo deny check` enforces the advisories, licenses and sources allowed by `deny.toml`.
+
 ## Build
 
 ```sh

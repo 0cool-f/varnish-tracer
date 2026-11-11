@@ -2,6 +2,7 @@
 name = "varnish-tracer"
 version = "0.1.2"
 edition = "2024"
+rust-version = "1.95"
 license = "GPL-3.0-or-later"
 
 [dependencies]

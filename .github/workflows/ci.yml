@@ -22,3 +22,22 @@ jobs:
             cargo fmt --check
             cargo clippy --all-targets --locked -- -D warnings
             cargo test --locked'
+
+  # rust-version in Cargo.toml: the crate and every locked dependency must still build with it
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check with the minimum supported Rust version
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
+          docker run --rm -v "$PWD:/src" -w /src "rust:$msrv-alpine" sh -ec '
+            apk add --no-cache musl-dev >/dev/null
+            cargo check --all-targets --locked'
+
+  # Advisories, licenses, bans and sources as configured in deny.toml
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@3c6349835b2b7b196a839186cb8b78e02f7b5f25 # v2.1.1
