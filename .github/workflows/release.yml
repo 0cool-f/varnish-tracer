@@ -45,20 +45,29 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           merge-multiple: true
-      - name: Publish the release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+      - name: Collect the assets and their checksums
         run: |
           cp vcl/tracer.vcl dist/
           cd dist
           chmod 0755 varnish-tracer-*
           sha256sum varnish-tracer-* tracer.vcl > SHA256SUMS
           cat SHA256SUMS
+      # Build provenance for every file listed in SHA256SUMS, checked with gh attestation verify
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/SHA256SUMS
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
           gh release create "$TAG" --verify-tag --title "varnish-tracer ${TAG#v}" --generate-notes varnish-tracer-* tracer.vcl SHA256SUMS

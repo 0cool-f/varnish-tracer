@@ -311,7 +311,13 @@ Every `v*` tag builds static musl binaries on native GitHub runners and publishe
 | `tracer.vcl` | the VCL include of the same version |
 | `SHA256SUMS` | checksums of the three files above |
 
-Images that embed the tracer should download the asset for their architecture and verify it against a checksum pinned in their own build files, not against the `SHA256SUMS` downloaded next to it.
+Each file listed in `SHA256SUMS` also gets a signed build provenance attestation, which ties it to the release workflow run and the tagged commit:
+
+```sh
+gh attestation verify varnish-tracer-x86_64-linux-musl --repo 0cool-f/varnish-tracer
+```
+
+Images that embed the tracer should pin the checksum of `SHA256SUMS` in their own build files, verify the downloaded `SHA256SUMS` against it and then verify the other assets against `SHA256SUMS`. Renovate's `github-release-attachments` datasource updates such a pin together with the version.
 
 ## Supported Rust versions
 
