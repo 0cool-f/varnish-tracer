@@ -336,6 +336,12 @@ The release binaries are built inside `rust:alpine`, which produces a static mus
 docker run --rm -v "$PWD:/src" -w /src rust:alpine sh -ec 'apk add --no-cache musl-dev; cargo build --release --locked'
 ```
 
+`tests/e2e/run.sh` runs that binary against a real Varnish built from `tests/e2e/Dockerfile`, with `vcl/tracer.vcl`, the tracer in `--dry-run` and real requests, and checks the printed spans, the request metrics and a recreated Varnish container; it needs docker (or `DOCKER=podman`), curl and jq:
+
+```sh
+tests/e2e/run.sh target/release/varnish-tracer
+```
+
 ## License
 
 `varnish-tracer` is licensed under GPL-3.0-or-later, see [LICENSE](LICENSE).
