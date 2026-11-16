@@ -100,6 +100,7 @@ fn main() -> ExitCode {
     }
 
     let mut child_status = None;
+    let mut stop_requested = false;
     if let Some(key) = settings.key {
         install_signal_handler(shutdown.clone(), vec![slot.clone(), red_slot.clone()]);
         let mut spawned = match ncsa::spawn(&cli.varnishncsa, &cli.instance, &key) {
@@ -123,6 +124,7 @@ fn main() -> ExitCode {
                     red,
                     &red_slot,
                     stopping.clone(),
+                    shutdown.clone(),
                     slot.clone(),
                     counters.clone(),
                 )),
@@ -154,6 +156,9 @@ fn main() -> ExitCode {
         });
         child.mark_reaped();
         let _ = stderr_thread.join();
+        stop_requested = shutdown.get().is_some();
+        // Nothing is read any more, so the queued spans get the same bounded, retry-free flush as on a signal
+        let _ = shutdown.set(Instant::now());
         stopping.store(true, Relaxed);
         child::stop(&red_slot);
         if let Some(thread) = red_thread {
@@ -173,7 +178,7 @@ fn main() -> ExitCode {
 
     match child_status {
         None => ExitCode::SUCCESS,
-        Some(Ok(status)) if shutdown.get().is_some() => {
+        Some(Ok(status)) if stop_requested => {
             eprintln!("varnish-tracer: stopped, varnishncsa {status}");
             ExitCode::SUCCESS
         }
@@ -230,6 +235,7 @@ fn start_red(
     red: Arc<red::Red>,
     red_slot: &child::Slot,
     stopping: Arc<AtomicBool>,
+    shutdown: Arc<Shutdown>,
     main_slot: child::Slot,
     counters: Arc<Counters>,
 ) -> std::thread::JoinHandle<()> {
@@ -245,7 +251,7 @@ fn start_red(
         let status = spawned.wait();
         red_child.mark_reaped();
         let _ = stderr_thread.join();
-        if !stopping.load(Relaxed) {
+        if !stopping.load(Relaxed) && shutdown.get().is_none() {
             match status {
                 Ok(status) => eprintln!("varnish-tracer: request varnishncsa exited: {status}"),
                 Err(err) => {

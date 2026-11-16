@@ -53,6 +53,13 @@ impl Counters {
         self.dropped_export.fetch_add(lost, Relaxed);
         lost
     }
+
+    /// Counts a span taken off the queue; never wraps below zero after `abandon` emptied the gauge.
+    pub fn dequeue(&self) {
+        let _ = self
+            .queued
+            .try_update(Relaxed, Relaxed, |queued| Some(queued.saturating_sub(1)));
+    }
 }
 
 pub struct Config {
@@ -155,7 +162,7 @@ pub fn run(rx: Receiver<Span>, cfg: Config, counters: &Counters, shutdown: &Shut
         match rx.recv_timeout(wake.saturating_duration_since(now)) {
             Ok(span) => {
                 counters.held.fetch_add(1, Relaxed);
-                counters.queued.fetch_sub(1, Relaxed);
+                counters.dequeue();
                 if batch.is_empty() {
                     batch_deadline = Instant::now() + cfg.batch_timeout;
                 }
@@ -190,7 +197,7 @@ fn dry_run(rx: Receiver<Span>, counters: &Counters) {
     loop {
         match rx.recv_timeout(next_report.saturating_duration_since(Instant::now())) {
             Ok(span) => {
-                counters.queued.fetch_sub(1, Relaxed);
+                counters.dequeue();
                 let line = crate::dryrun::json_line(&span);
                 // A closed stdout must not stop the pipeline
                 let _ = writeln!(std::io::stdout().lock(), "{line}");

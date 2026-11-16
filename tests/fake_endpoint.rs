@@ -430,6 +430,25 @@ fn sigterm_with_a_hanging_endpoint_exits_within_the_grace_period() {
 }
 
 #[test]
+fn varnishncsa_exiting_with_a_hanging_endpoint_exits_within_the_grace_period() {
+    let addr = hang();
+    let url = format!("http://{addr}/v1/traces");
+    let body = format!("i=0; while [ $i -lt 50 ]; do echo '{LINE}'; i=$((i+1)); done; exit 3");
+    let script = fake_ncsa("ncsa-exit-hang.sh", &body);
+    let child = spawn_tracer(&script, &["--endpoint", &url, "--batch-size", "1"]);
+    let run = finish(child);
+    assert!(run.elapsed < Duration::from_secs(5), "{:?}", run.elapsed);
+    assert_eq!(run.code, Some(1), "{}", run.stderr);
+    assert!(run.stderr.contains("varnishncsa exited"), "{}", run.stderr);
+    assert_eq!(
+        run.counter("dropped_queue") + run.counter("dropped_export"),
+        50,
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
 fn child_ignoring_sigterm_is_killed() {
     let script = fake_ncsa(
         "ncsa-stubborn.sh",
