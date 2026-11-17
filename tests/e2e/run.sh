@@ -125,6 +125,7 @@ path=/plain get
 path=/untrusted get -H 'traceparent: 00-11111111111111111111111111111111-2222222222222222-01'
 path=/trusted get -H 'X-Test-Trusted: 1' -H 'traceparent: 00-33333333333333333333333333333333-4444444444444444-01'
 path=/trusted-unsampled get -H 'X-Test-Trusted: 1' -H 'traceparent: 00-55555555555555555555555555555555-6666666666666666-00'
+path=/esibad get
 path=/synth get
 path=/status/503 get
 path=/slow get
@@ -180,9 +181,10 @@ check_absent() {
 }
 check_absent "unsampled requests have no span" '.attributes["url.path"] | IN("/plain", "/trusted-unsampled", "/red-warmup")'
 check_absent "a client traceparent is neither trusted nor sampled" '.attributes["url.path"] == "/untrusted" or .trace_id == "11111111111111111111111111111111"'
-check_absent "ESI fragments have no span of their own" '.attributes["url.path"] | IN("/frag1", "/frag2")'
+check_absent "ESI fragments have no span of their own, a failed one included" '.attributes["url.path"] | IN("/frag1", "/frag2", "/esibad", "/status/503-frag")'
 
 late_flood=$(spans | jq -s '[.[] | select(.attributes["url.path"] | startswith("/synth/"))] | length')
+# The limit is 5: /synth, /status/503 and /slow take three tokens, the failed ESI fragment none
 if [ "$late_flood" = 2 ]; then
   echo "ok   late sampling stops at the vsthrottle limit"
 else

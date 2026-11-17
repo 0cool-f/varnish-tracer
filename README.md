@@ -73,10 +73,10 @@ VCL include that owns the trace context. It requires the `blobdigest` vmod (`blo
 
 #### Log key
 
-Every record `tracer.vcl` writes with `std.log` is prefixed with a shared secret key instead of a fixed word: `<key>_tp:`, `<key>_parent:`, `<key>_be_tp:`, `<key>_be_parent:`, `<key>_hits:`, `<key>_ttl:` and `<key>_reason:`. `varnishncsa` only selects records with that prefix, so a VCL that logs client data after a fixed `tracer_tp:` prefix can no longer forge a span; only code that knows the key can.
+Every record `tracer.vcl` writes with `std.log` is prefixed with a shared secret key instead of a fixed word: `<key>_tp:`, `<key>_parent:`, `<key>_be_tp:`, `<key>_be_parent:`, `<key>_hits:`, `<key>_ttl:`, `<key>_reason:` and `<key>_late:`. `varnishncsa` only selects records with that prefix, so a VCL that logs client data after a fixed `tracer_tp:` prefix can no longer forge a span; only code that knows the key can.
 
 - The key is the content of `/etc/varnish/tracer.key`: 32 lowercase hex characters, trailing whitespace such as a newline allowed. Generate it with `openssl rand -hex 16`.
-- The VCL reads it with `std.fileread`, which caches the content per call site until the VCL is reloaded. The binary reads it from `--key-file` at startup and exits with code 2 when the file is missing, unreadable or invalid; it never prints the key. `--stdin` does not read it.
+- The VCL reads it with `std.fileread`, which caches the content per call site until the VCL is reloaded. The binary reads it from `--key-file` at startup and exits with code 2 when the file is missing, unreadable or invalid; it never prints the key, but passes it to `varnishncsa` in its arguments, which local users can read unless `/proc` is mounted with `hidepid`. `--stdin` does not read it.
 - If the file is missing or does not hold 32 hex characters, tracing is disabled entirely: `tracer_start`, `tracer_restart`, `tracer_deliver` and the backend span in `vcl_backend_fetch` do nothing and log nothing, and no `traceparent` is generated. `tracer_recv` still removes the client's trace headers, and `tracer_recv_trusted` still validates the upstream `traceparent` and forwards it unchanged. The VCL still compiles, and a key file that appears later is picked up by the call sites that have not read it yet, so reload the VCL after creating it.
 - Rotating the key needs a VCL reload (`varnishadm vcl.load` and `vcl.use`) and a restart of `varnish-tracer`; spans logged under the old key are lost between the two steps.
 - The records carry the key in clear text in the shared log, so everyone who can read the Varnish working directory can read the key too. Mount that directory read-only into the tracer container only, and keep the key file readable by `varnishd` and `varnish-tracer` alone.
@@ -91,7 +91,7 @@ Every record `tracer.vcl` writes with `std.log` is prefixed with a shared secret
 | `tracer_start_late` | To be called from the including VCL's `vcl_deliver` or `vcl_synth`, on its own condition such as a 5xx status, for requests that were not sampled in `vcl_recv`. Calls `tracer_start` and logs `<key>_late:1` when it started a span; the backend fetch is already over, so such a request has no `CLIENT` span. In `vcl_deliver`, setting the `X-Tracer-Late` request header before `tracer_deliver` does the same. |
 | `tracer_deliver` | To be called from the including VCL's `vcl_deliver`. Calls `tracer_start_late` first when the including VCL has set `X-Tracer-Late`. For a traced request it logs `<key>_hits:<obj.hits>` and `<key>_ttl:<obj.ttl>`, and `<key>_reason:<X-Tracer-Reason>` when the including VCL has set that request header. |
 | `vcl_backend_fetch` | For a traced fetch (`X-Tracer-Span` set, valid key, valid `traceparent`) generates a new span id for the backend request with the same hashing as `tracer_start` and the backend transaction id, logs `<key>_be_tp:00-<trace id>-<new id>-01` and `<key>_be_parent:<Varnish span id>`, and sends that `traceparent` to the backend. Then removes `X-Tracer-Parent`, `X-Tracer-Span`, `X-Tracer-Id`, `X-Tracer-Reason` and `X-Tracer-Late` from the backend request. |
-| `vcl_pipe` | Removes the same four internal headers; piped requests get no backend span and the backend sees the Varnish span id in `traceparent`. |
+| `vcl_pipe` | Removes the same five internal headers; piped requests get no backend span and the backend sees the Varnish span id in `traceparent`. |
 | `vcl_backend_response` | When `bereq.uncacheable` is false, removes the `traceparent`, `tracestate` and `traceresponse` response headers and the `dt*` entries of `Server-Timing` (joining repeated `Server-Timing` headers first, and dropping the header when nothing else is left), so the ids of one request are never replayed from the cache to other users. Uncacheable fetches, such as passes, keep these headers. |
 
 Both entry points also handle two special cases and then return:
@@ -173,7 +173,7 @@ Dry run: with `--dry-run` nothing is exported and no HTTP request is made; each 
 
 Metrics: with `--metrics-listen ADDR:PORT` a small HTTP server runs on its own thread and answers `GET /metrics` with the Prometheus text format; every other method and path gets a 404. It reads the request head within 2 s and at most 8 KiB, handles one connection at a time, and only reads the counters, so it can never slow the pipeline down. There is no authentication or TLS: bind it to a loopback or a private address.
 
-Request metrics: with `--red-metrics` a second `varnishncsa` prints one short line (status, handling, time to first byte) for every client transaction, sampled or not, ESI subrequests included, and the endpoint adds:
+Request metrics: with `--red-metrics` a second `varnishncsa` prints one short line (status, handling, time to first byte) for every client transaction, sampled or not, ESI subrequests excluded, and the endpoint adds:
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -206,7 +206,7 @@ Both span kinds use the trace id and span id from the log record (`<key>_tp` for
 | end | `Timestamp:Resp`, else start plus the logged duration | `Timestamp:BerespBody`, else `Timestamp:Error`, else `Timestamp:Beresp`, else start plus the logged duration |
 | status | `ERROR` for 5xx responses, unset otherwise | `ERROR` for 5xx responses and for fetch errors (a `FetchError` record or a `Timestamp:Error`), unset otherwise |
 
-Every string value, the span name included, is cut to 1024 bytes on a UTF-8 boundary.
+Every string value, the span name included, is cut to 1024 bytes on a UTF-8 boundary. Varnish already cuts each log record to `vsl_reclen` bytes (255 by default), so longer URLs, user agents and cache reasons arrive truncated unless that parameter is raised.
 
 `SERVER` span attributes:
 

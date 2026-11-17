@@ -20,7 +20,9 @@ sub vcl_recv {
 sub vcl_synth {
   set resp.http.Content-Type = "text/html";
   set resp.http.Cache-Control = "max-age=60";
-  if (req.url ~ "^/esi") {
+  if (req.url ~ "^/esibad") {
+    set resp.body = {"<p>top</p><esi:include src="/status/503-frag"/>"};
+  } else if (req.url ~ "^/esi") {
     set resp.body = {"<p>top</p><esi:include src="/frag1"/><esi:include src="/frag2"/>"};
   } else {
     set resp.body = "origin " + req.url;

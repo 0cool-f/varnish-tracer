@@ -113,7 +113,7 @@ impl Red {
     }
 }
 
-/// Starts the `varnishncsa` that prints one line per client transaction, ESI subrequests included.
+/// Starts the `varnishncsa` that prints one line per client transaction; ESI subrequests are not shown without `-E`.
 pub fn spawn(binary: &str, instance: &str) -> io::Result<Child> {
     Command::new(binary)
         .args(["-n", instance, "-c", "-t", "off", "-F", FORMAT])

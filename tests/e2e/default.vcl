@@ -1,7 +1,7 @@
 vcl 4.1;
 
 # Varnish under test: X-Test-Trusted picks the trusted entry point, "sample" in the query samples in vcl_recv,
-# and 5xx or slow responses that were not sampled are traced late.
+# and 5xx or slow responses that were not sampled are traced late, ESI fragments excepted.
 
 import std;
 import vsthrottle;
@@ -51,6 +51,7 @@ sub vcl_backend_response {
 
 sub tracer_late {
   if (!req.http.X-Tracer-Span &&
+      req.esi_level == 0 &&
       (resp.status >= 500 || now - req.time > 2s) &&
       !vsthrottle.is_denied("tracer_late", 5, 60s)) {
     call tracer_start_late;
