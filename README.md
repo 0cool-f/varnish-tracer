@@ -287,7 +287,7 @@ The OneAgent local OTLP ingest has to be enabled on the host; check the endpoint
 
 ## Deployment
 
-The binary and `tracer.vcl` ship in the Varnish image. `varnish-tracer` runs as a second container from that image, with the volume holding the Varnish working directory mounted read-only, the same user as `varnishd` and the key file that `varnishd` also reads:
+`varnish-tracer` runs as a second container from the Varnish image, whose `varnishncsa` matches the `varnishd` it reads from. The binary and `tracer.vcl` come from the release: the binary is mounted into that container, and `tracer.vcl` goes into a directory on the `vcl_path` of `varnishd`, such as `/etc/varnish`. The container mounts the volume holding the Varnish working directory read-only, runs as the same user as `varnishd` and reads the same key file:
 
 ```sh
 openssl rand -hex 16 > tracer.key
@@ -296,6 +296,7 @@ docker run -d --name varnish-tracer \
   --restart always \
   -v varnish_dir:/var/lib/varnish:ro \
   -v ./tracer.key:/etc/varnish/tracer.key:ro \
+  -v ./varnish-tracer-x86_64-linux-musl:/usr/local/bin/varnish-tracer:ro \
   -e OTEL_SERVICE_NAME=varnish-example \
   <varnish image> varnish-tracer
 ```
@@ -317,7 +318,7 @@ Each file listed in `SHA256SUMS` also gets a signed build provenance attestation
 gh attestation verify varnish-tracer-x86_64-linux-musl --repo 0cool-f/varnish-tracer
 ```
 
-Images that embed the tracer should pin the checksum of `SHA256SUMS` in their own build files, verify the downloaded `SHA256SUMS` against it and then verify the other assets against `SHA256SUMS`. Renovate's `github-release-attachments` datasource updates such a pin together with the version.
+Releases are immutable: once published, a tag and its assets cannot change, so pinning the version pins the content. Installers verify the downloaded assets against the `SHA256SUMS` of the same release to catch transfer errors.
 
 ## Supported Rust versions
 
