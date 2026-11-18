@@ -301,6 +301,39 @@ docker run -d --name varnish-tracer \
   <varnish image> varnish-tracer
 ```
 
+## Querying the spans
+
+The spans carry the attributes listed in [Span contents](#span-contents), so any OTLP backend can filter on them. On Dynatrace, where OneAgent does not create spans for requests handled by Varnish, they show where a request spent its time between the upstream service and the backend, and DQL reads them from Grail; replace the service name with the one set by `--service-name`.
+
+Recent requests:
+
+```dql
+fetch spans, from: now() - 2h
+| filter service.name == "varnish"
+| fields start_time, trace.id, span.kind, span.name, duration, url.path,
+         http.response.status_code, varnish.handling, varnish.backend, varnish.time_to_first_byte
+| sort start_time desc
+| limit 100
+```
+
+Latency by span kind and cache handling:
+
+```dql
+fetch spans, from: now() - 24h
+| filter service.name == "varnish"
+| summarize spans = count(), p50 = percentile(duration, 50), p95 = percentile(duration, 95),
+            by: { span.kind, varnish.handling }
+```
+
+One whole trace, with the spans of the services before and after Varnish:
+
+```dql
+fetch spans, from: now() - 24h
+| filter trace.id == toUid("0123456789abcdef0123456789abcdef")
+| fields start_time, service.name, span.kind, span.name, span.id, span.parent_id, duration
+| sort start_time asc
+```
+
 ## Releases
 
 Every `v*` tag builds static musl binaries on native GitHub runners and publishes them with the release:
